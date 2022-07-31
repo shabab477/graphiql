@@ -8,7 +8,9 @@
  */
 
 import glob from 'fast-glob';
-import { existsSync, readFileSync, writeFile, writeFileSync } from 'fs';
+import { existsSync } from 'fs';
+import { readFile, writeFile } from 'fs/promises';
+
 import {
   CachedContent,
   FileChangeTypeKind,
@@ -66,11 +68,8 @@ import {
   LoaderNoResultError,
   ProjectNotFoundError,
 } from 'graphql-config';
-import { promisify } from 'util';
 import { Logger } from './Logger';
 import type { LoadConfigOptions } from './types';
-
-const writeFileAsync = promisify(writeFile);
 
 const configDocLink =
   'https://www.npmjs.com/package/graphql-language-service-server#user-content-graphql-configuration-file';
@@ -82,6 +81,19 @@ type CachedDocumentType = {
 function toPosition(position: VscodePosition): IPosition {
   return new Position(position.line, position.character);
 }
+/**
+ * TODO: much of the logic in here that was added after 2020 or later
+ * later on should be moved to GraphQLLanguageService or GraphQLCache
+ * Also - test coverage took a hit with the init "cache warm"
+ *
+ * (see `MessageProcessor` file history where this came from)
+ */
+
+enum ProjectConfigCacheStatus {
+  'Loading' = 1,
+  'Loaded' = 2,
+  'Error' = 3,
+}
 
 export class WorkspaceMessageProcessor {
   _connection: Connection;
@@ -90,6 +102,7 @@ export class WorkspaceMessageProcessor {
   _languageService!: GraphQLLanguageService;
   _textDocumentCache: Map<string, CachedDocumentType>;
   _isInitialized: boolean;
+  _projectCacheStatuses: Map<string, ProjectConfigCacheStatus>;
   _isGraphQLConfigMissing: boolean | null = null;
   _logger: Logger;
   _extensions?: GraphQLExtensionDeclaration[];
@@ -127,6 +140,10 @@ export class WorkspaceMessageProcessor {
     this._tmpDirBase = path.join(this._tmpDir, 'graphql-language-service');
     // use legacy mode by default for backwards compatibility
     this._loadConfigOptions = { legacy: true, ...loadConfigOptions };
+    // track whether we've warmed the cache for each project
+    // much more performant than loading them all at once when
+    // you load the first file s
+    this._projectCacheStatuses = new Map();
     if (
       loadConfigOptions.extensions &&
       loadConfigOptions.extensions?.length > 0
@@ -139,8 +156,11 @@ export class WorkspaceMessageProcessor {
     }
     this._rootPath = rootPath;
   }
-
-  async _updateGraphQLConfig() {
+  /**
+   *
+   * @param uri
+   */
+  async _loadAndCacheProjectConfig(uri: string) {
     const settings = await this._connection.workspace.getConfiguration({
       section: 'graphql-config',
       scopeUri: this._rootPath,
@@ -177,15 +197,44 @@ export class WorkspaceMessageProcessor {
         this._graphQLCache,
         this._logger,
       );
+
       if (this._graphQLConfig || this._graphQLCache?.getGraphQLConfig) {
         const config =
           this._graphQLConfig ?? this._graphQLCache.getGraphQLConfig();
-        await this._cacheAllProjectFiles(config);
+
+        const project = config.getProjectForFile(uri);
+
+        // TODO: we can do some really neat things with these statuses
+        // if we can send them to the client
+        try {
+          this._setProjectCacheStatus(
+            project.name,
+            ProjectConfigCacheStatus.Loading,
+          );
+
+          await this._cacheSchemaFilesForProject(project);
+          await this._cacheDocumentFilesforProject(project);
+
+          this._projectCacheStatuses.set(
+            project.name,
+            ProjectConfigCacheStatus.Loaded,
+          );
+        } catch (err) {
+          this._setProjectCacheStatus(
+            project.name,
+            ProjectConfigCacheStatus.Error,
+          );
+        }
       }
       this._isInitialized = true;
     } catch (err) {
       this._handleConfigError({ err });
     }
+  }
+  // encapsulate this fo
+  _setProjectCacheStatus(name: string, status: ProjectConfigCacheStatus) {
+    // this._connection.sendNotification()
+    this._projectCacheStatuses.set(name, status);
   }
   _handleConfigError({ err }: { err: unknown; uri?: string }) {
     if (err instanceof ConfigNotFoundError) {
@@ -245,8 +294,8 @@ export class WorkspaceMessageProcessor {
         // don't try to initialize again if we've already tried
         // and the graphql config file or package.json entry isn't even there
         if (this._isGraphQLConfigMissing !== true) {
-          // then initial call to update graphql config
-          await this._updateGraphQLConfig();
+          // then initial call to load the config for this file
+          await this._loadAndCacheProjectConfig(params?.textDocument?.uri);
         } else {
           return null;
         }
@@ -287,8 +336,10 @@ export class WorkspaceMessageProcessor {
         this._settings.load?.fileName,
       ].filter(Boolean);
       if (configMatchers.some(v => uri.match(v)?.length)) {
-        this._logger.info('updating graphql config');
-        this._updateGraphQLConfig();
+        this._logger.info(
+          "graphql config changed. opening or saving a file will now re-initialize it's project cache",
+        );
+        this._projectCacheStatuses = new Map();
         return { uri, diagnostics: [] };
       }
       // update graphql config only when graphql config is saved!
@@ -570,15 +621,17 @@ export class WorkspaceMessageProcessor {
     ) {
       const uri = change.uri;
 
-      const text = readFileSync(URI.parse(uri).fsPath, 'utf-8');
+      const text = await readFile(URI.parse(uri).fsPath, 'utf-8');
       const contents = this._parser(text, uri);
 
+      // first update cache
       await this._updateFragmentDefinition(uri, contents);
       await this._updateObjectTypeDefinition(uri, contents);
 
       const project = this._graphQLCache.getProjectForFile(uri);
       let diagnostics: Diagnostic[] = [];
 
+      // then validate
       if (project?.extensions?.languageService?.enableValidation !== false) {
         diagnostics = (
           await Promise.all(
@@ -806,7 +859,7 @@ export class WorkspaceMessageProcessor {
       if (schemaDocument) {
         version = schemaDocument.version++;
       }
-      const schemaText = readFileSync(uri, { encoding: 'utf-8' });
+      const schemaText = await readFile(uri, { encoding: 'utf-8' });
       this._cacheSchemaText(schemaUri, schemaText, version);
     }
   }
@@ -938,14 +991,14 @@ export class WorkspaceMessageProcessor {
         const cachedSchemaDoc = this._getCachedDocument(uri);
 
         if (!cachedSchemaDoc) {
-          await writeFileAsync(fsPath, schemaText, {
+          await writeFile(fsPath, schemaText, {
             encoding: 'utf-8',
           });
           await this._cacheSchemaText(uri, schemaText, 1);
         }
         // do we have a change in the getSchema result? if so, update schema cache
         if (cachedSchemaDoc) {
-          writeFileSync(fsPath, schemaText, {
+          await writeFile(fsPath, schemaText, {
             encoding: 'utf-8',
           });
           await this._cacheSchemaText(
