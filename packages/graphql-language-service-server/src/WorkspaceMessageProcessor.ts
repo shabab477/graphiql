@@ -226,20 +226,22 @@ export class WorkspaceMessageProcessor {
           );
         }
       }
-      this._isInitialized = true;
     } catch (err) {
       this._handleConfigError({ err });
     }
   }
-  // encapsulate this fo
-  _setProjectCacheStatus(name: string, status: ProjectConfigCacheStatus) {
+  // encapsulate this for fun later 😜
+  _setProjectCacheStatus(
+    projectName: string,
+    cacheStatus: ProjectConfigCacheStatus,
+  ) {
+    // TODO: tell the client about this for visual feedback some day?
     // this._connection.sendNotification()
-    this._projectCacheStatuses.set(name, status);
+    this._projectCacheStatuses.set(projectName, cacheStatus);
   }
+
   _handleConfigError({ err }: { err: unknown; uri?: string }) {
     if (err instanceof ConfigNotFoundError) {
-      // TODO: obviously this needs to become a map by workspace from uri
-      // for workspaces support
       this._isGraphQLConfigMissing = true;
 
       this._logConfigError(err.message);
@@ -289,8 +291,19 @@ export class WorkspaceMessageProcessor {
      * Initialize the LSP server when the first file is opened or saved,
      * so that we can access the user settings for config rootDir, etc
      */
+
+    const project = this._graphQLCache.getProjectForFile(
+      params.textDocument.uri,
+    );
+
+    // Lazily warm the cache when a file is opened or saved in that project
+    // this
     try {
-      if (!this._isInitialized || !this._graphQLCache) {
+      // only check has() here rather than the status,
+      // otherwise bad configs might try to keep re-loading,
+      // or pending requests might be duplicated or worse
+      // this means we only try once per project config
+      if (project && !this._projectCacheStatuses.has(project.name)) {
         // don't try to initialize again if we've already tried
         // and the graphql config file or package.json entry isn't even there
         if (this._isGraphQLConfigMissing !== true) {
@@ -348,13 +361,12 @@ export class WorkspaceMessageProcessor {
         contents = cachedDocument.contents;
       }
     }
-    if (!this._graphQLCache) {
+    if (this._isGraphQLConfigMissing) {
       return { uri, diagnostics };
     } else {
       try {
-        const project = this._graphQLCache.getProjectForFile(uri);
         if (
-          this._isInitialized &&
+          this._projectCacheStatuses.get(project.name) &&
           project?.extensions?.languageService?.enableValidation !== false
         ) {
           await Promise.all(
@@ -392,7 +404,7 @@ export class WorkspaceMessageProcessor {
   async handleDidChangeNotification(
     params: DidChangeTextDocumentParams,
   ): Promise<PublishDiagnosticsParams | null> {
-    if (!this._isInitialized || !this._graphQLCache) {
+    if (this._isGraphQLConfigMissing ?? !this._graphQLCache) {
       return null;
     }
     // For every `textDocument/didChange` event, keep a cache of textDocuments
@@ -467,7 +479,7 @@ export class WorkspaceMessageProcessor {
   }
 
   handleDidCloseNotification(params: DidCloseTextDocumentParams): void {
-    if (!this._isInitialized || !this._graphQLCache) {
+    if (this._isGraphQLConfigMissing ?? !this._graphQLCache) {
       return;
     }
     // For every `textDocument/didClose` event, delete the cached entry.

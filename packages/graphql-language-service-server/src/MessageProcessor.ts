@@ -218,11 +218,13 @@ export class MessageProcessor {
   async handleDidChangeConfiguration(
     _params: DidChangeConfigurationParams,
   ): Promise<DidChangeConfigurationRegistrationOptions> {
-    await Promise.all(
-      Array.from(this._processors.values()).map(processor =>
-        processor._updateGraphQLConfig(),
-      ),
-    );
+    // TODO: same cache reset behavior?
+
+    // await Promise.all(
+    //   Array.from(this._processors.values()).map(processor =>
+    //     processor._updateGraphQLConfig(),
+    //   ),
+    // );
     this._logger.log(
       JSON.stringify({
         type: 'usage',
