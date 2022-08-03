@@ -343,7 +343,7 @@ export function GraphiQL({
               <ExplorerContextProvider
                 isVisible={docExplorerOpen}
                 onToggleVisibility={onToggleDocs}>
-                <GraphiQLWithContext {...props} />
+                <GraphiQLInterface {...props} />
               </ExplorerContextProvider>
             </ExecutionContextProvider>
           </SchemaContextProvider>
@@ -357,7 +357,7 @@ GraphiQL.Logo = GraphiQLLogo;
 GraphiQL.Toolbar = GraphiQLToolbar;
 GraphiQL.Footer = GraphiQLFooter;
 
-type GraphiQLWithContextProviderProps = Omit<
+export type GraphiQLInterfaceProps = Omit<
   GraphiQLProps,
   | 'dangerouslyAssumeSchemaIsValid'
   | 'defaultQuery'
@@ -378,7 +378,7 @@ type GraphiQLWithContextProviderProps = Omit<
   | 'variables'
 >;
 
-function GraphiQLWithContext(props: GraphiQLWithContextProviderProps) {
+export function GraphiQLInterface(props: GraphiQLInterfaceProps) {
   const editorContext = useEditorContext({ nonNull: true });
   const executionContext = useExecutionContext({ nonNull: true });
   const explorerContext = useExplorerContext();
