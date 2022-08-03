@@ -6,8 +6,4 @@ button.graphiql-toolbar-button {
   &.error {
     background: var(--color-red-background);
   }
-
-  & > svg {
-    pointer-events: none;
-  }
 }
