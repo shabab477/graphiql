@@ -2,7 +2,7 @@
   position: relative;
 }
 
-.graphiql-execute-button {
+button.graphiql-execute-button {
   background-color: var(--color-pink);
   border: none;
   border-radius: var(--border-radius-8);
